@@ -69,6 +69,7 @@ public:
 
     // return the distance in meters in North/East plane as a N/E vector to loc2
     Vector2f get_distance_NE(const Location &loc2) const;
+    Vector2f get_distance_NE_WP(const Location &loc2) const; //kniuko
     Vector2d get_distance_NE_double(const Location &loc2) const;
     Vector2F get_distance_NE_ftype(const Location &loc2) const;
 
@@ -121,6 +122,10 @@ public:
       This will be more than 1 if we have passed point2
      */
     float line_path_proportion(const Location &point1, const Location &point2) const;
+
+    //kniuko
+    // same as above but sets proportion to 1.0 at acceptance_distance before target WP
+    float line_path_proportion_WP(const Location &point1, const Location &point2, float _acceptance_distance_m) const;
 
     // update altitude and alt-frame base on this location's horizontal position between point1 and point2
     // this location's lat,lon is used to calculate the alt of the closest point on the line between point1 and point2

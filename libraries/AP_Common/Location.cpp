@@ -265,6 +265,16 @@ Vector2f Location::get_distance_NE(const Location &loc2) const
                     diff_longitude(loc2.lng,lng) * LOCATION_SCALING_FACTOR * longitude_scale((loc2.lat+lat)/2));
 }
 
+/*
+  return the distance in meters in North/East plane as a N/E vector
+  from loc1 to loc2
+ */
+Vector2f Location::get_distance_NE_WP(const Location &loc2) const //kniuko
+{
+    return Vector2f((loc2.lat - lat) * LOCATION_SCALING_FACTOR,
+                    diff_longitude(loc2.lng,lng) * LOCATION_SCALING_FACTOR * longitude_scale((loc2.lat+lat)/2));
+}
+
 // return the distance in meters in North/East/Down plane as a N/E/D vector to loc2, NOT CONSIDERING ALT FRAME!
 Vector3f Location::get_distance_NED(const Location &loc2) const
 {
@@ -421,6 +431,18 @@ float Location::line_path_proportion(const Location &point1, const Location &poi
     const Vector2f vec1 = point1.get_distance_NE(point2);
     const Vector2f vec2 = point1.get_distance_NE(*this);
     const ftype dsquared = sq(vec1.x) + sq(vec1.y);
+    if (dsquared < 0.001f) {
+        // the two points are very close together
+        return 1.0f;
+    }
+    return (vec1 * vec2) / dsquared;
+}
+
+float Location::line_path_proportion_WP(const Location &point1, const Location &point2, float _acceptance_distance_m) const
+{
+    const Vector2f vec1 = point1.get_distance_NE_WP(point2); //kniuko
+    const Vector2f vec2 = point1.get_distance_NE_WP(*this); //kniuko
+    const ftype dsquared = sq(vec1.x) + sq(vec1.y) - sq(2*_acceptance_distance_m); //kniuko
     if (dsquared < 0.001f) {
         // the two points are very close together
         return 1.0f;

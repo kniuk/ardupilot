@@ -163,7 +163,7 @@ const AP_Param::GroupInfo AP_TECS::var_info[] = {
 
     // @Param: LAND_TCONST
     // @DisplayName: Land controller time constant (sec)
-    // @Description: This is the time constant of the TECS control algorithm when in final landing stage of flight. It should be smaller than TECS_TIME_CONST to allow for faster flare
+    // @Description: This is the time constant of the TECS control algorithm during automatic landing. It should be smaller than TECS_TIME_CONST to allow for faster flare
     // @Range: 1.0 5.0
     // @Increment: 0.2
     // @User: Advanced
@@ -424,7 +424,7 @@ void AP_TECS::_update_speed_demand(void)
     // into the ground due to an unachievable airspeed value
     if ((_flags.badDescent) || (_flags.underspeed))
     {
-        _TAS_dem     = _TASmin;
+        _TAS_dem = _TASmin;
     }
 
     // Constrain speed demand, taking into account the load factor
@@ -460,12 +460,8 @@ void AP_TECS::_update_speed_demand(void)
     _TAS_dem_adj = constrain_float(_TAS_dem_adj, _TASmin, _TASmax);
 }
 
-void AP_TECS::_update_height_demand(void)
+void AP_TECS::_update_height_demand(float hgt_afe)
 {
-    // Apply 2 point moving average to demanded height
-    _hgt_dem = 0.5f * (_hgt_dem + _hgt_dem_in_old);
-    _hgt_dem_in_old = _hgt_dem;
-
     float max_sink_rate = _maxSinkRate;
     if (_maxSinkRate_approach > 0 && _flags.is_doing_auto_land) {
         // special sink rate for approach to accommodate steep slopes and reverse thrust.
@@ -485,56 +481,96 @@ void AP_TECS::_update_height_demand(void)
     {
         _hgt_dem = _hgt_dem_prev - max_sink_rate * 0.1f;
     }
-    _hgt_dem_prev = _hgt_dem;
 
-    // Apply first order lag to height demand
-    _hgt_dem_adj = 0.05f * _hgt_dem + 0.95f * _hgt_dem_adj_last;
+    //kniuk
+    if (_landing.is_on_approach() && !_flags2._roundout_to_flare) {
+        // calculate time to flare
+        float _flare_sec = _landing.get_flare_sec();
+        float _flare_alt = _landing.get_flare_alt();
+        float _time_to_flare;
+        // float _land_sink_dem = (_hgt_dem_prev - _hgt_dem) * 10;
+        // use smoothed out sink demand
+        _land_sink_dem = 0.5f * (_hgt_dem_prev - _hgt_dem) * 10 + 0.5f * _land_sink_dem;
+
+        // what about range finder corrections and setting roundout_to_flare too soon = before range finder correction ?
+
+        // make sure we are sinking more than commanded flaring sink
+        if (_land_sink_dem > _land_sink){
+            if (_flare_sec < 0.9f) {
+                // use flare_alt
+                _time_to_flare = (hgt_afe-_flare_alt) / _land_sink_dem;
+            } else {
+                // use flare_sec
+                _time_to_flare = (hgt_afe / _land_sink_dem) - _flare_sec;
+            }
+            if (_time_to_flare < timeConstant()) {
+                _flags2._roundout_to_flare = true;
+                _flare_counter = 2 * timeConstant() * 10 + 1;
+                _flare_prep_rate = (_land_sink_dem - _land_sink) / _flare_counter;
+                // if actual height is above demanded - bring demanded height to actual
+                // if actual height is below demanded - keep demanded height as is
+                if (_hgt_dem_adj_last < hgt_afe) {
+                    _hgt_dem_adj_last = hgt_afe + (_land_sink_dem * 0.1f);    
+                }
+                _hgt_rate_dem = -_land_sink_dem;
+                // temporarly post debug info to MAVLink
+                gcs().send_text(MAV_SEVERITY_INFO, "F-prep %.1fm sdem=%.2f fpr=%.4f",
+                                  (double)hgt_afe, (double)_land_sink_dem, (double)_flare_prep_rate);
+            }
+        }
+    }
+
+    if (!_flags.is_doing_auto_land) {
+        _flags2._roundout_to_flare = false;
+        _flare_counter = 0;
+        _land_sink_dem = 0;
+    }
 
     // when flaring force height rate demand to the
     // configured sink rate and adjust the demanded height to
     // be kinematically consistent with the height rate.
-    if (_landing.is_flaring()) {
-        _integSEB_state = 0;
-        if (_flare_counter == 0) {
-            _hgt_rate_dem = _climb_rate;
-            _land_hgt_dem = _hgt_dem_adj;
-        }
+    if (_landing.is_flaring() || _flags2._roundout_to_flare) {
+        // integrator behaviour on flare nor flare preparation is adjusted in _update_pitch method
 
-        // adjust the flare sink rate to increase/decrease as your travel further beyond the land wp
-        float land_sink_rate_adj = _land_sink + _land_sink_rate_change*_distance_beyond_land_wp;
-
-        // bring it in over 1s to prevent overshoot
-        if (_flare_counter < 10) {
-            _hgt_rate_dem = _hgt_rate_dem * 0.8f - 0.2f * land_sink_rate_adj;
-            _flare_counter++;
+        // start flare only when alt/sec reached and finished smooth sink rate lowering during whole flare preparation time
+        // notice: flare will also be started when far past the landing point
+        if (_landing.is_flaring() && _flare_counter <= 0) {
+            // adjust the flare sink rate to increase/decrease as your travel further beyond the land wp            
+            _hgt_rate_dem = - (_land_sink + _land_sink_rate_change * _distance_beyond_land_wp);
+            /*if (!_flags2._flare_initiated) {
+                // if actual height is above demanded - bring demanded height to actual
+                // if actual height is below demanded - keep demanded height as is
+                // _hgt_dem_adj_last = _hgt_afe; //or height - difference is range finder correction ??? 
+                if (_hgt_dem_adj_last < hgt_afe) {
+                    _hgt_dem_adj_last = hgt_afe;
+                }
+                _flags2._flare_initiated = true;
+            }*/
         } else {
-            _hgt_rate_dem = - land_sink_rate_adj;
+            // roundout_to_flare time reached
+            if (_flare_counter > 0) {
+                _hgt_rate_dem = _hgt_rate_dem + _flare_prep_rate;
+                _flare_counter--;
+            }
         }
-        _land_hgt_dem += 0.1f * _hgt_rate_dem;
-        _hgt_dem_adj = _land_hgt_dem;
+        _hgt_dem_adj = _hgt_dem_adj_last + (_hgt_rate_dem * 0.1f);
     } else {
+        if (_flags.is_doing_auto_land) {
+            // for landing approach we want to avoid a lagged height demand
+            // while constantly descending which causes us to consistently be
+            // above the desired glide slope.
+            _hgt_dem_adj = 0.5f * _hgt_dem + 0.5f * _hgt_dem_adj_last;
+        } else {
+            // Apply first order lag to height demand
+            //_hgt_dem_adj = 0.2f * _hgt_dem + 0.8f * _hgt_dem_adj_last; //kniuk - faster, I don't see any flaws in beeing faster here
+            //_hgt_dem_adj = 0.2f * _hgt_dem + 0.8f * _hgt_dem_adj_last;
+            _hgt_dem_adj = _hgt_dem;
+        }
+
         _hgt_rate_dem = (_hgt_dem_adj - _hgt_dem_adj_last) / 0.1f;
-        _flare_counter = 0;
     }
-
-    // for landing approach we will predict ahead by the time constant
-    // plus the lag produced by the first order filter. This avoids a
-    // lagged height demand while constantly descending which causes
-    // us to consistently be above the desired glide slope. This will
-    // be replaced with a better zero-lag filter in the future.
-    float new_hgt_dem = _hgt_dem_adj;
-    if (_flags.is_doing_auto_land) {
-        if (hgt_dem_lag_filter_slew < 1) {
-            hgt_dem_lag_filter_slew += 0.1f; // increment at 10Hz to gradually apply the compensation at first
-        } else {
-            hgt_dem_lag_filter_slew = 1;
-        }
-        new_hgt_dem += hgt_dem_lag_filter_slew*(_hgt_dem_adj - _hgt_dem_adj_last)*10.0f*(timeConstant()+1);
-    } else {
-        hgt_dem_lag_filter_slew = 0;
-    }
+    _hgt_dem_prev = _hgt_dem;
     _hgt_dem_adj_last = _hgt_dem_adj;
-    _hgt_dem_adj = new_hgt_dem;
 }
 
 void AP_TECS::_detect_underspeed(void)
@@ -699,6 +735,11 @@ void AP_TECS::_update_throttle_with_airspeed(void)
 
         // Rate limit PD + FF throttle
         // Calculate the throttle increment from the specified slew time
+        
+        if (_landing.is_flaring()) { //kniuk
+           _throttle_dem = constrain_float(_landing.get_flare_throttle() * 0.01f, 0.0f, nomThr);
+        }
+
         int8_t throttle_slewrate = aparm.throttle_slewrate;
         if (_landing.is_on_approach()) {
             const int8_t land_slewrate = _landing.get_throttle_slewrate();
@@ -717,11 +758,19 @@ void AP_TECS::_update_throttle_with_airspeed(void)
         }
 
         // Sum the components.
-        _throttle_dem = _throttle_dem + _integTHR_state;
+        //kniuk
+        if (!_landing.is_flaring()) {
+            _throttle_dem = _throttle_dem + _integTHR_state;
+            if (!_flags2._roundout_to_flare){
+                // smoothened=delayed throttle when not flaring nor prepare to flare
+                _throttle_dem = 0.1f * _throttle_dem + 0.9f * _throttle_dem_last;
+            }
+        }
     }
 
     // Constrain throttle demand
     _throttle_dem = constrain_float(_throttle_dem, _THRminf, _THRmaxf);
+    _throttle_dem_last = _throttle_dem;
 }
 
 float AP_TECS::_get_i_gain(void)
@@ -770,6 +819,11 @@ void AP_TECS::_update_throttle_without_airspeed(int16_t throttle_nudge)
     if (_flags.is_gliding)
     {
         _throttle_dem = 0.0f;
+        return;
+    }
+
+    if (_landing.is_flaring()) { //kniuk
+        _throttle_dem = constrain_float(_landing.get_flare_throttle()*0.01f, 0.0f, nomThr);
         return;
     }
 
@@ -829,9 +883,14 @@ void AP_TECS::_update_pitch(void)
         SKE_weighting = 2.0f;
     } else if (_flags.is_doing_auto_land) {
         if (_spdWeightLand < 0) {
-            // use sliding scale from normal weight down to zero at landing
-            float scaled_weight = _spdWeight * (1.0f - constrain_float(_path_proportion,0,1));
-            SKE_weighting = constrain_float(scaled_weight, 0.0f, 2.0f);
+            //kniuk enforce zero weight for whole preparation to flare and actual flare
+            if (_landing.is_flaring() || _flags2._roundout_to_flare) {
+                SKE_weighting = 0.0f;
+            } else {
+                // use sliding scale from normal weight down to zero at landing
+                float scaled_weight = _spdWeight * (1.0f - constrain_float(_path_proportion,0,1));
+                SKE_weighting = constrain_float(scaled_weight, 0.0f, 2.0f);
+            }
         } else {
             SKE_weighting = constrain_float(_spdWeightLand, 0.0f, 2.0f);
         }
@@ -878,11 +937,19 @@ void AP_TECS::_update_pitch(void)
     // demand equal to the minimum value (which is )set by the mission plan during this mode). Otherwise the
     // integrator has to catch up before the nose can be raised to reduce speed during climbout.
     // During flare a different damping gain is used
-    float gainInv = (_TAS_state * timeConstant() * GRAVITY_MSS);
-    float temp = SEB_error + 0.5*SEBdot_dem * timeConstant();
+
+    //kniuk
+    float _timeConstant = timeConstant();
+    if (_landing.is_flaring() || _flags2._roundout_to_flare) {
+        //make pitch demand stronger on preparation to flare and actual flare - for faster reaching demanded sink rate
+        _timeConstant = timeConstant() / 4.0f;
+    }
+
+    float gainInv = (_TAS_state * _timeConstant * GRAVITY_MSS);
+    float temp = SEB_error + 0.5*SEBdot_dem * _timeConstant;
 
     float pitch_damp = _ptchDamp;
-    if (_landing.is_flaring()) {
+    if (_landing.is_flaring() || _flags2._roundout_to_flare) {
         pitch_damp = _landDamp;
     } else if (!is_zero(_land_pitch_damp) && _flags.is_doing_auto_land) {
         pitch_damp = _land_pitch_damp;
@@ -902,6 +969,12 @@ void AP_TECS::_update_pitch(void)
     // range in one step. This prevents single value glitches from
     // causing massive integrator changes. See Issue#4066
     integSEB_delta = constrain_float(integSEB_delta, -integSEB_range*0.1f, integSEB_range*0.1f);
+
+    // stop updating and smoothly bring to zero the integrator on flare
+    if (_landing.is_flaring() || _flags2._roundout_to_flare) {
+      integSEB_delta = 0;
+      _integSEB_state = _integSEB_state * 0.8f;
+    }
 
     // prevent the constraint on pitch integrator _integSEB_state from
     // itself injecting step changes in the variable. We only want the
@@ -992,7 +1065,6 @@ void AP_TECS::_update_STE_rate_lim(void)
     _STEdot_min = - _minSinkRate * GRAVITY_MSS;
 }
 
-
 void AP_TECS::update_pitch_throttle(int32_t hgt_dem_cm,
                                     int32_t EAS_dem_cm,
                                     enum AP_Vehicle::FixedWing::FlightStage flight_stage,
@@ -1052,58 +1124,19 @@ void AP_TECS::update_pitch_throttle(int32_t hgt_dem_cm,
         _PITCHminf = constrain_float(_PITCHminf, -_pitch_max_limit, _PITCHmaxf);
         _pitch_max_limit = 90;
     }
-
-    if (!_landing.is_on_approach()) {
-        // reset land pitch min when not landing
-        _land_pitch_min = _PITCHminf;
-    }
     
-    if (_landing.is_flaring()) {
-        // in flare use min pitch from LAND_PITCH_CD
-        _PITCHminf = MAX(_PITCHminf, _landing.get_pitch_cd() * 0.01f);
-
-        // and use max pitch from TECS_LAND_PMAX
-        if (_land_pitch_max != 0) {
-            // note that this allows a flare pitch outside the normal TECS auto limits
-            _PITCHmaxf = _land_pitch_max;
+    if (_landing.is_flaring() ){ //} || _flags2._roundout_to_flare) {
+        // in flare / preparation to flare we don't allow pitch to go lower than
+        // LAND_PITCH_CD once commanded by _pitch_dem
+        if (_pitch_dem > radians(_landing.get_pitch_cd() * 0.01f)) {
+            _flags2._limit_flare_pitch = true;
         }
-
-        // and allow zero throttle
-        _THRminf = 0;
-    } else if (_landing.is_on_approach() && (-_climb_rate) > _land_sink) {
-        // constrain the pitch in landing as we get close to the flare
-        // point. Use a simple linear limit from 15 meters after the
-        // landing point
-        float time_to_flare = (- hgt_afe / _climb_rate) - _landing.get_flare_sec();
-        if (time_to_flare < 0) {
-            // we should be flaring already
+        if (_flags2._limit_flare_pitch){
             _PITCHminf = MAX(_PITCHminf, _landing.get_pitch_cd() * 0.01f);
-        } else if (time_to_flare < timeConstant()*2) {
-            // smoothly move the min pitch to the flare min pitch over
-            // twice the time constant
-            float p = time_to_flare/(2*timeConstant());
-            float pitch_limit_cd = p*aparm.pitch_limit_min_cd + (1-p)*_landing.get_pitch_cd();
-#if 0
-            ::printf("ttf=%.1f hgt_afe=%.1f _PITCHminf=%.1f pitch_limit=%.1f climb=%.1f\n",
-                     time_to_flare, hgt_afe, _PITCHminf, pitch_limit_cd*0.01f, _climb_rate);
-#endif
-            _PITCHminf = MAX(_PITCHminf, pitch_limit_cd*0.01f);
         }
-    }
-
-    if (_landing.is_on_approach()) {
-        // don't allow the lower bound of pitch to decrease, nor allow
-        // it to increase rapidly. This prevents oscillation of pitch
-        // demand while in landing approach based on rapidly changing
-        // time to flare estimate
-        if (_land_pitch_min <= -90) {
-            _land_pitch_min = _PITCHminf;
-        }
-        const float flare_pitch_range = 20;
-        const float delta_per_loop = (flare_pitch_range/_landTimeConst) * _DT;
-        _PITCHminf = MIN(_PITCHminf, _land_pitch_min+delta_per_loop);
-        _land_pitch_min = MAX(_land_pitch_min, _PITCHminf);
-        _PITCHminf = MAX(_land_pitch_min, _PITCHminf);
+    } else {
+        // reset flare pitch limiting when not in final stage of landing
+        _flags2._limit_flare_pitch = false; 
     }
 
     if (_landing.is_flaring()) {
@@ -1111,6 +1144,8 @@ void AP_TECS::update_pitch_throttle(int32_t hgt_dem_cm,
         if (_land_pitch_max != 0) {
             _PITCHmaxf = MIN(_land_pitch_max, _PITCHmaxf);
         }
+        // and allow zero throttle
+        _THRminf = 0;
     }
 
     if (flight_stage == AP_Vehicle::FixedWing::FLIGHT_TAKEOFF || flight_stage == AP_Vehicle::FixedWing::FLIGHT_ABORT_LAND) {
@@ -1138,7 +1173,7 @@ void AP_TECS::update_pitch_throttle(int32_t hgt_dem_cm,
     _update_speed_demand();
 
     // Calculate the height demand
-    _update_height_demand();
+    _update_height_demand(hgt_afe);
 
     // Detect underspeed condition
     _detect_underspeed();

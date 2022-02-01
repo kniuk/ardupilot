@@ -108,7 +108,7 @@ bool AP_Landing::type_slope_verify_land(const Location &prev_WP_loc, Location &n
                                   (double)gps.ground_speed(),
                                   (double)current_loc.get_distance(next_WP_loc));
             }
-            
+
             type_slope_stage = SLOPE_STAGE_FINAL;
             
             // Check if the landing gear was deployed before landing
@@ -154,9 +154,30 @@ bool AP_Landing::type_slope_verify_land(const Location &prev_WP_loc, Location &n
         gcs().send_text(MAV_SEVERITY_INFO, "Distance from LAND point=%.2fm", (double)current_loc.get_distance(next_WP_loc));
     }
 
-    // check if we should auto-disarm after a confirmed landing
+    //kniuk
     if (type_slope_stage == SLOPE_STAGE_FINAL) {
+        // check if we should auto-disarm after a confirmed landing
         disarm_if_autoland_complete_fn();
+
+        //this is an extra safety measure to make sure that throttle will be set to zero when sink rate for 1 second is below
+        //half of landing sink rate even if reported height is above 0.1 meter AFE and is_flying
+        if (sink_rate < (SpdHgt_Controller->get_land_sinkrate() / 2)) {
+            if (_low_sink_counter < 30) {
+                _low_sink_counter++;
+            }
+        } else if (_low_sink_counter < 30){
+            //reset if sink_rate is higher before 1 sec elapses
+            _low_sink_counter = 0;
+        }
+        // check conditions to allow non zero throttle on flare
+        if (flare_throttle > 0 && height > 0.1f && _low_sink_counter < 30 && is_flying) {
+                type_slope_flags.throttle_on_flare = true;
+        } else {
+            type_slope_flags.throttle_on_flare = false;
+        }
+    } else {
+        //resetting here ensures throttle won't be activated again during flare or after flare
+        _low_sink_counter = 0;
     }
 
     if (mission.continue_after_land() &&
@@ -294,6 +315,13 @@ void AP_Landing::type_slope_setup_landing_glide_slope(const Location &prev_WP_lo
         flare_distance = total_distance/2;
     }
 
+    // calculate slope to landing point
+    bool is_first_calc = is_zero(slope);
+    slope = (sink_height - aim_height) / (total_distance - flare_distance); //kniuk - bug explained in XLS file
+    if (is_first_calc) {
+        gcs().send_text(MAV_SEVERITY_INFO, "Landing glide slope %.1f degrees", (double)degrees(atanf(slope)));
+    }
+
     // project a point 500 meters past the landing point, passing
     // through the landing point
     const float land_projection = 500;
@@ -304,13 +332,6 @@ void AP_Landing::type_slope_setup_landing_glide_slope(const Location &prev_WP_lo
     Location loc = next_WP_loc;
     loc.offset_bearing(land_bearing_cd * 0.01f, -flare_distance);
     loc.alt += aim_height*100;
-
-    // calculate slope to landing point
-    bool is_first_calc = is_zero(slope);
-    slope = (sink_height - aim_height) / (total_distance - flare_distance);
-    if (is_first_calc) {
-        gcs().send_text(MAV_SEVERITY_INFO, "Landing glide slope %.1f degrees", (double)degrees(atanf(slope)));
-    }
 
     // calculate point along that slope 500m ahead
     loc.offset_bearing(land_bearing_cd * 0.01f, land_projection);
@@ -421,5 +442,5 @@ void AP_Landing::type_slope_log(void) const
 
 bool AP_Landing::type_slope_is_throttle_suppressed(void) const
 {
-    return type_slope_stage == SLOPE_STAGE_FINAL;
+    return ((type_slope_stage == SLOPE_STAGE_FINAL) && (type_slope_flags.throttle_on_flare == false));
 }

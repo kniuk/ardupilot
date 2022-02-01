@@ -99,12 +99,15 @@ public:
     
     int16_t get_pitch_cd(void) const { return pitch_cd; }
     float get_flare_sec(void) const { return flare_sec; }
+    float get_flare_alt(void) const { return flare_alt; } //kniuk
+    int8_t get_flare_throttle(void) const { return flare_throttle; } //kniuk
     int8_t get_disarm_delay(void) const { return disarm_delay; }
     int8_t get_then_servos_neutral(void) const { return then_servos_neutral; }
     int8_t get_abort_throttle_enable(void) const { return abort_throttle_enable; }
     int8_t get_flap_percent(void) const { return flap_percent; }
     int8_t get_throttle_slewrate(void) const { return throttle_slewrate; }
     bool is_commanded_go_around(void) const { return flags.commanded_go_around; }
+    bool is_throttle_on_flare(void) const { return type_slope_flags.throttle_on_flare; } //kniuk
     bool is_complete(void) const;
     void set_initial_slope(void) { initial_slope = slope; }
     bool is_expecting_impact(void) const;
@@ -133,6 +136,11 @@ private:
 
     float height_flare_log;
 
+    // kniuk
+    // counts duration of below threshold sink rate as an extra safety measure to detect landing finish
+    // introduced for zeroing throttle at touch down when throttle_on_flare is set
+    int8_t _low_sink_counter;
+
     AP_Mission &mission;
     AP_AHRS &ahrs;
     AP_SpdHgtControl *SpdHgt_Controller;
@@ -155,6 +163,7 @@ private:
     AP_Int16 pitch_cd;
     AP_Float flare_alt;
     AP_Float flare_sec;
+    AP_Int8 flare_throttle; //kniuk
     AP_Float pre_flare_airspeed;
     AP_Float pre_flare_alt;
     AP_Float pre_flare_sec;
@@ -181,6 +190,10 @@ private:
         bool post_stats:1;
 
         bool has_aborted_due_to_slope_recalc:1;
+
+        // kniuk
+        // is throttle allowed on flare - usefull fo draggy airframes which are not able to flare long enough with zero throttle
+        bool throttle_on_flare:1;
     } type_slope_flags;
 
     void type_slope_do_land(const AP_Mission::Mission_Command& cmd, const float relative_altitude);

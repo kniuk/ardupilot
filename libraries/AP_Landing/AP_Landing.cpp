@@ -145,6 +145,16 @@ const AP_Param::GroupInfo AP_Landing::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("OPTIONS", 16, AP_Landing, _options, 0),
 
+    // kniuk
+    // @Param: FLARE_THROTTLE
+    // @DisplayName: Landing flare throttle
+    // @Description: Throttle value to be used on flare, use on draggy airframes to prevent premature stall
+    // @Range: 0 100
+    // @Units: %
+    // @Increment: 1
+    // @User: Advanced
+    AP_GROUPINFO("FLARE_THR", 17, AP_Landing, flare_throttle, 0),
+
     // @Param: TYPE
     // @DisplayName: Auto-landing type
     // @Description: Specifies the auto-landing type to use

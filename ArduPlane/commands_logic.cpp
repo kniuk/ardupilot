@@ -645,7 +645,8 @@ bool Plane::verify_nav_wp(const AP_Mission::Mission_Command& cmd)
         return false;
     }
 
-    float acceptance_distance_m = 0; // default to: if overflown - let it fly up to the point
+    //float acceptance_distance_m = 0; // default to: if overflown - let it fly up to the point //kniuko moved to public
+    acceptance_distance_m = 0; // default to: if overflown - let it fly up to the point
     if (cmd_acceptance_distance > 0) {
         // allow user to override acceptance radius
         acceptance_distance_m = cmd_acceptance_distance;
@@ -653,10 +654,23 @@ bool Plane::verify_nav_wp(const AP_Mission::Mission_Command& cmd)
         acceptance_distance_m = nav_controller->turn_distance(get_wp_radius(), auto_state.next_turn_angle);
     }
 
+    uint64_t now = AP_HAL::micros64();
+    //kniuko
+    AP::logger().WriteStreaming(
+    "KNI",
+    "TimeUS,AccDis",
+    "sm",
+    "F0",
+    "Qf",
+    now,
+    (double)acceptance_distance_m);
+
     if (auto_state.wp_distance <= acceptance_distance_m) {
-        gcs().send_text(MAV_SEVERITY_INFO, "Reached waypoint #%i dist %um",
+        // kniuko
+        gcs().send_text(MAV_SEVERITY_INFO, "Reached waypoint #%i dist %um accd %.1fm",
                           (unsigned)mission.get_current_nav_cmd().index,
-                          (unsigned)current_loc.get_distance(flex_next_WP_loc));
+                          (unsigned)current_loc.get_distance(flex_next_WP_loc),
+                          (double)acceptance_distance_m);
         return true;
 	}
 

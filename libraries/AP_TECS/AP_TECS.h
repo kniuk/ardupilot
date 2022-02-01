@@ -203,6 +203,7 @@ private:
 
     // throttle demand in the range from -1.0 to 1.0, usually positive unless reverse thrust is enabled via _THRminf < 0
     float _throttle_dem;
+    float _throttle_dem_last;
 
     // pitch angle demand in radians
     float _pitch_dem;
@@ -262,7 +263,9 @@ private:
     float _hgt_dem_adj_last;
     float _hgt_rate_dem;
     float _hgt_dem_prev;
-    float _land_hgt_dem;
+    float _flare_prep_rate;
+    //kniuk
+    float _land_sink_dem;
 
     // Speed demand after application of rate limiting
     // This is the demand tracked by the TECS control loops
@@ -304,6 +307,27 @@ private:
         struct flags _flags;
         uint8_t _flags_byte;
     };
+
+    struct flags2 {
+        //true when sink rate adjustment to landing sink rate should begin
+        bool _roundout_to_flare:1;
+
+        // true when after flare parameter inititated in height_demand method
+        bool _flare_initiated:1;
+        
+        // true when pitch demand was at least once above LAND_PITCH_CD during flare
+        bool _limit_flare_pitch:1; 
+    };    
+    union {
+        struct flags2 _flags2;
+        uint8_t _flags2_byte;
+    };
+
+    // true when after flare parameter inititated in height_demand method
+    //bool _flare_initiated;
+
+    // true when pitch demand was at least once above LAND_PITCH_CD during flare
+    //bool _limit_flare_pitch;
 
     // time when underspeed started
     uint32_t _underspeed_start_ms;
@@ -353,8 +377,6 @@ private:
 
     float _distance_beyond_land_wp;
 
-    float _land_pitch_min = -90;
-
     // need to reset on next loop
     bool _need_reset;
 
@@ -378,7 +400,7 @@ private:
     void _update_speed_demand(void);
 
     // Update the demanded height
-    void _update_height_demand(void);
+    void _update_height_demand(float hgt_afe);
 
     // Detect an underspeed condition
     void _detect_underspeed(void);

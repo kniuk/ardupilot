@@ -727,6 +727,9 @@ private:
     // The location of the active waypoint in Guided mode.
     struct Location guided_WP_loc {};
 
+    //kniuko - for knowing WP reached and for proprotion calculation
+    float acceptance_distance_m;
+
     // Altitude control
     struct {
         // target altitude above sea level in cm. Used for barometric
